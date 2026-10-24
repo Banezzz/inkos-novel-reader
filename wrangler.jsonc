@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "inkos-novel-reader",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-24",
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "inkos-novel-reader",
+      "database_id": "6fc48ee2-942b-43e8-96df-44e5855f6adc",
+      "migrations_dir": "migrations"
+    }
+  ]
+}
