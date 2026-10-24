@@ -6,6 +6,25 @@ const BOOKS_ROOT = process.env.INKOS_BOOKS_DIR || "/workspace/gz-rebirth-novel/b
 const API_BASE = (process.env.INKOS_READER_URL || "https://inkos-novel-reader.zhangbane.workers.dev").replace(/\/+$/, "");
 const SYNC_TOKEN = process.env.INKOS_SYNC_TOKEN || process.env.READER_PASSWORD || "";
 
+const VOLUME_TITLES = [
+  "第一卷：握手楼里的第一桶金（第1—50章）",
+  "第二卷：十三行里的少年掌柜（第51—100章）",
+  "第三卷：重点高中的双面人生（第101—150章）",
+  "第四卷：白马与流花的品牌突围（第151—200章）",
+  "第五卷：广交会与电商破晓（第201—250章）",
+  "第六卷：珠江新城的资本棋局（第251—300章）",
+  "第七卷：深广科技与移动浪潮（第301—350章）",
+  "第八卷：杏林国药与地产狂飙（第351—400章）",
+  "第九卷：华南巅峰与香江决战（第401—450章）",
+  "第十卷：羊城之巅·盛世群芳（第451—500章）",
+];
+
+function getVolumeInfo(chapNum) {
+  const volumeNum = Math.min(10, Math.max(1, Math.ceil(chapNum / 50)));
+  const volumeTitle = VOLUME_TITLES[volumeNum - 1] || VOLUME_TITLES[0];
+  return { volumeNum, volumeTitle };
+}
+
 function readIfExists(filePath) {
   try {
     if (fs.existsSync(filePath)) {
@@ -37,19 +56,21 @@ function collectRoles(storyDir) {
   if (!fs.existsSync(rolesDir)) return roles;
 
   let order = 0;
-  for (const cat of fs.readdirSync(rolesDir)) {
+  const categories = ["主要角色", "次要角色"];
+  for (const cat of categories) {
     const catPath = path.join(rolesDir, cat);
-    if (!fs.statSync(catPath).isDirectory()) continue;
-    for (const file of fs.readdirSync(catPath)) {
+    if (!fs.existsSync(catPath) || !fs.statSync(catPath).isDirectory()) continue;
+    for (const file of fs.readdirSync(catPath).sort()) {
       if (!file.endsWith(".md")) continue;
       const name = file.replace(/\.md$/, "");
       const content = readIfExists(path.join(catPath, file));
+      const isVillain = content.includes("反派");
       roles.push({
         name,
         category: cat,
-        role_tag: cat === "主要角色" ? "核心人物" : "重要角色",
+        role_tag: cat === "主要角色" ? "核心主角/女主" : isVillain ? "反派角色" : "绝色女主",
         content,
-        sort_order: cat === "主要角色" ? order++ : 100 + order++,
+        sort_order: cat === "主要角色" ? order++ : isVillain ? 200 + order++ : 50 + order++,
       });
     }
   }
@@ -62,7 +83,7 @@ function extractSummary(storyFrame, brief) {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !l.startsWith("#") && !l.startsWith(">"));
-  return (lines[0] || "重生回 2008 年广州城中村十五岁少年，激活系统，改写命运与红颜人生。").slice(0, 260);
+  return (lines[0] || "重生回 2008 年广州城中村十五岁少年，绑定【巅峰人生·逆袭气运系统】，在商业逆袭与十一位绝色红颜的深情羁绊中登顶华南巅峰。").slice(0, 260);
 }
 
 const syncedChapterHashes = new Map();
@@ -99,26 +120,28 @@ async function syncAllBooks(force = false) {
 
     const bookSignature = JSON.stringify({
       title: bookMeta.title,
+      tc: bookMeta.targetChapters,
       u: bookMeta.updatedAt,
       sf: storyFrame.length,
       vm: volumeMap.length,
       ph: pendingHooks.length,
       cs: currentState.length,
-      r: roles.length,
+      csum: chapterSummaries.length,
+      r: roles.map((x) => `${x.name}:${x.content.length}`).join(","),
     });
 
     if (force || syncedBookHashes.get(bookId) !== bookSignature) {
       const payload = {
         id: bookId,
         title: bookMeta.title || bookId,
-        subtitle: "2008 羊城城中村 · 红颜气运系统",
+        subtitle: "2008 羊城城中村 · 逆袭气运系统 · 500章群芳谱",
         author: "InkOS AI",
         genre: bookMeta.genre === "urban" ? "都市重生" : (bookMeta.genre || "都市重生"),
         platform: bookMeta.platform === "tomato" ? "番茄小说" : (bookMeta.platform || "番茄小说"),
         status: bookMeta.status === "active" ? "连载中" : (bookMeta.status || "连载中"),
-        target_chapters: bookMeta.targetChapters || 50,
+        target_chapters: bookMeta.targetChapters || 500,
         cover_color: "#8c2d19",
-        tags: ["重生2008", "广州十三行", "系统流", "多女主", "商战逆袭"],
+        tags: ["重生2008", "广州十三行", "逆袭气运系统", "多女主后宫", "商战巅峰"],
         summary: extractSummary(storyFrame, brief),
         story_frame: storyFrame,
         volume_map: volumeMap,
@@ -131,7 +154,7 @@ async function syncAllBooks(force = false) {
       };
       await postJson("/api/sync/book", payload);
       syncedBookHashes.set(bookId, bookSignature);
-      console.log(`[sync] Synced book metadata & ${roles.length} roles for: ${payload.title}`);
+      console.log(`[sync] Synced book metadata (target=${payload.target_chapters}) & ${roles.length} roles for: ${payload.title}`);
     }
 
     // Sync chapters
@@ -160,18 +183,12 @@ async function syncAllBooks(force = false) {
       const intent = readIfExists(path.join(runtimeDir, `chapter-${padNum}.intent.md`));
       const plan = readIfExists(path.join(runtimeDir, `chapter-${padNum}.plan.md`));
 
-      const sig = `${content.length}:${intent.length}:${plan.length}`;
+      const { volumeNum, volumeTitle } = getVolumeInfo(chapNum);
+      const sig = `${content.length}:${intent.length}:${plan.length}:${volumeTitle}`;
       const key = `${bookId}#${chapNum}`;
       if (!force && syncedChapterHashes.get(key) === sig) continue;
 
       const idxMeta = indexByNum.get(chapNum) || {};
-      const volumeNum = chapNum <= 18 ? 1 : chapNum <= 36 ? 2 : 3;
-      const volumeTitle =
-        volumeNum === 1
-          ? "第一卷：从泥里爬起来（第1—18章）"
-          : volumeNum === 2
-          ? "第二卷：站住脚，被人看见（第19—36章）"
-          : "第三卷：掀桌子（第37—50章）";
 
       await postJson("/api/sync/chapter", {
         book_id: bookId,
@@ -187,7 +204,7 @@ async function syncAllBooks(force = false) {
         created_at: idxMeta.createdAt || new Date().toISOString(),
       });
       syncedChapterHashes.set(key, sig);
-      console.log(`[sync] Synced Chapter ${chapNum}: ${idxMeta.title || fileTitle}`);
+      console.log(`[sync] Synced Chapter ${chapNum} (${volumeTitle}): ${idxMeta.title || fileTitle}`);
     }
   }
 }
